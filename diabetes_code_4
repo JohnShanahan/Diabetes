@@ -1,0 +1,224 @@
+pip install -q pandas numpy scipy matplotlib seaborn statsmodels
+
+**next  
+import platform
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
+
+SEED = 42
+rng = np.random.default_rng(SEED)
+pd.set_option("display.max_columns", 30)
+pd.set_option("display.float_format", lambda value: f"{value:,.3f}")
+sns.set_theme(style="whitegrid", context="notebook")
+
+print("Python:", platform.python_version())
+print("pandas:", pd.__version__)
+print("NumPy:", np.__version__)
+
+  *next
+DATA_URL = "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv"
+df = pd.read_csv(DATA_URL)
+
+print(f"Rows: {df.shape[0]:,}; columns: {df.shape[1]}")
+display(df.head())
+
+required = {"PassengerId", "Survived", "Pclass", "Name", "Sex", "Age",
+            "SibSp", "Parch", "Ticket", "Fare", "Cabin", "Embarked"}
+assert required.issubset(df.columns)
+assert df["PassengerId"].is_unique
+assert set(df["Survived"].unique()).issubset({0, 1})
+assert set(df["Pclass"].unique()).issubset({1, 2, 3})
+print("Initial data-contract checks passed.")
+
+
+  **next 
+  schema_audit = pd.DataFrame({
+    "dtype": df.dtypes.astype(str),
+    "non_null": df.notna().sum(),
+    "missing": df.isna().sum(),
+    "unique": df.nunique(dropna=True)
+}).sort_values("missing", ascending=False)
+display(schema_audit)
+
+  **next
+
+  variable_roles = pd.DataFrame({
+    "variable": [
+        "PassengerId", "Survived", "Pclass", "Name", "Sex",
+        "Age", "SibSp", "Parch", "Ticket", "Fare", "Cabin", "Embarked"
+    ],
+    "analytical_role": [
+        "Unique Key", "Target Variable (Binary)", "Predictor (Categorical/Ordinal)", "Descriptor/Identifier", "Predictor (Categorical)",
+        "Predictor (Numerical)", "Predictor (Numerical/Discrete)", "Predictor (Numerical/Discrete)", "Descriptor/Identifier", "Predictor (Numerical/Continuous)",
+        "Predictor (Categorical)", "Predictor (Categorical)"
+    ],
+    "suitable_summary": [
+        "Count, Unique count", "Value counts, Proportion", "Value counts, Bar chart", "Unique count", "Value counts, Bar chart",
+        "Mean, Median, Std, Histogram", "Value counts, Median, Bar chart", "Value counts, Median, Bar chart", "Unique count", "Mean, Median, Range, Histogram",
+        "Value counts, Missing values", "Value counts, Mode, Bar chart"
+    ]
+})
+display(variable_roles)
+
+
+**next
+  def profile(series):
+    observed = series.dropna()
+    q1, q3 = observed.quantile([0.25, 0.75])
+    return pd.Series({
+        "n": observed.size,
+        "missing": series.isna().sum(),
+        "mean": observed.mean(),
+        "median": observed.median(),
+        "std": observed.std(),
+        "IQR": q3 - q1,
+        "min": observed.min(),
+        "max": observed.max(),
+        "skew": observed.skew()
+    })
+
+summary = df[["Age", "Fare", "SibSp", "Parch"]].apply(profile).T
+display(summary)
+
+
+
+**next
+      # Exercise 2 (Interpretation)
+# Write two evidence-based findings. Identify the most strongly right-skewed variable
+# and explain whether mean and standard deviation or median and IQR are more informative.
+
+finding_1 = "Fare is the most strongly right-skewed variable with a skewness coefficient of 4.787, which is heavily influenced by a few extremely high passenger fares (up to 512.329) while the median fare is only 14.454."
+finding_2 = "For highly right-skewed distributions like Fare, the median and IQR are much more robust and informative summary statistics because the mean (32.204) and standard deviation (49.693) are disproportionately pulled upward by outliers."
+
+print("Finding 1:", finding_1)
+print("Finding 2:", finding_2)
+
+      ***next
+fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+sns.histplot(data=df, x="Age", bins=20, kde=True, ax=axes[0, 0], color="#54B7AF")
+sns.histplot(data=df, x="Fare", bins=30, kde=True, ax=axes[0, 1], color="#FF9D38")
+sns.boxplot(data=df, x="Age", ax=axes[1, 0], color="#54B7AF")
+sns.boxplot(data=df, x="Fare", ax=axes[1, 1], color="#FF9D38")
+axes[0, 0].set_title("Observed age distribution")
+axes[0, 1].set_title("Observed fare distribution")
+axes[1, 0].set_title("Age boxplot")
+axes[1, 1].set_title("Fare boxplot")
+plt.tight_layout()
+plt.show()
+
+
+
+  **next
+  df = df.assign(LogFare=np.log1p(df["Fare"]))
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+sns.histplot(data=df, x="Fare", bins=30, kde=True, ax=axes[0], color="#FF9D38")
+axes[0].set_title("Distribution of Fare")
+
+sns.histplot(data=df, x="LogFare", bins=30, kde=True, ax=axes[1], color="#4682B4")
+axes[1].set_title("Distribution of LogFare (log1p)")
+
+plt.tight_layout()
+plt.show()
+
+  *next
+  target = df["Survived"].value_counts(dropna=False).to_frame("count")
+target["proportion"] = target["count"] / len(df)
+display(target)
+print(f"Majority-class accuracy baseline: {target['proportion'].max():.1%}")
+
+
+  **nexty
+df = df.assign(AgeMissing=df["Age"].isna())
+age_missing_by_class = (
+    df.groupby("Pclass")
+      .agg(passengers=("PassengerId", "size"),
+           age_missing_rate=("AgeMissing", "mean"))
+)
+display(age_missing_by_class)
+
+  *nexy
+survival_by_sex = (
+    df.groupby("Sex", observed=True)
+      .agg(passengers=("PassengerId", "size"),
+           survivors=("Survived", "sum"),
+           survival_rate=("Survived", "mean"))
+)
+survival_by_sex["survival_percent"] = 100 * survival_by_sex["survival_rate"]
+display(survival_by_sex)
+
+difference = survival_by_sex.loc["female", "survival_rate"] - survival_by_sex.loc["male", "survival_rate"]
+print(f"Observed risk difference: {100*difference:.1f} percentage points")
+
+
+  *next
+
+
+  survival_by_class = (
+    df.groupby("Pclass", observed=True)
+      .agg(passengers=("PassengerId", "size"),
+           survivors=("Survived", "sum"),
+           survival_rate=("Survived", "mean"))
+)
+survival_by_class["survival_percent"] = 100 * survival_by_class["survival_rate"]
+display(survival_by_class)
+
+# Add the bar chart.
+plt.figure(figsize=(8, 5))
+sns.barplot(
+    data=survival_by_class.reset_index(),
+    x="Pclass",
+    y="survival_percent",
+    palette="viridis",
+    hue="Pclass",
+    legend=False
+)
+plt.title("Survival Rate by Passenger Class")
+plt.xlabel("Passenger Class (Pclass)")
+plt.ylabel("Survival Percentage (%)")
+plt.ylim(0, 100)
+plt.show()
+
+
+  **next
+table = pd.crosstab(df["Pclass"], df["Survived"])
+display(table)
+
+chi2, p_value, dof, expected = stats.chi2_contingency(table)
+n = table.to_numpy().sum()
+rows, columns = table.shape
+cramers_v = np.sqrt((chi2 / n) / min(columns - 1, rows - 1))
+
+print(f"Chi-square: {chi2:.3f}")
+print(f"Degrees of freedom: {dof}")
+print(f"p-value: {p_value:.3e}")
+print(f"Cramer's V: {cramers_v:.3f}")
+display(pd.DataFrame(expected, index=table.index, columns=table.columns))
+
+  **next
+
+  
+
+  
+  
+
+
+
+  
+
+  
+
+  
+      
+
+
+      
+
+
+      
+
+      
+  
