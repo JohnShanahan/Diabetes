@@ -1,0 +1,277 @@
+#plt.rcParams["figure.figsize"] = (7, 3.4)
+# --- Setup: run once
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.stats as st
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.metrics import confusion_matrix, classification_report
+from statsmodels.stats.proportion import proportion_confint
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+pd.set_option("display.width", 140)
+pd.set_option("display.max_columns", 30)
+pd.set_option("display.max_colwidth", 110)
+sns.set_theme(style="whitegrid")
+
+def check(label, ok):
+    """Self-check: prints PASS or CHECK AGAIN."""
+    print(("PASS         " if bool(ok) else "CHECK AGAIN  ") + label)
+
+URL = "https://raw.githubusercontent.com/JohnShanahan/Diabetes/refs/heads/main/diabetes.csv"
+try:
+    df = pd.read_csv(URL)
+except Exception:
+    # If the download is blocked
+    df = pd.read_csv("diabetes.csv")
+
+df_raw = df.copy()        # untouched copy
+print("shape:", df.shape)
+df.head(3)
+
+def contract(frame):
+    """Return {rule: True/False}. All True means the file matches the contract."""
+    return {
+        "patientId is unique":          frame["patient_id"].is_unique,
+        "age is number 1-100":         frame["age"].between(1, 100).all(),
+        "family history of diabetes":    frame["family_history_diabetes"].isin(["Yes", "No"]).all(),
+        "Sex male or female or other":  frame["gender"].isin(["Male", "Female", "Other"]).all(),
+        "diabetes risk":                frame["diabetes_risk"].isin(["High","Moderate","Low"]).all(),
+        "waist_circumference":           frame["waist_circumference_cm"].between(1, 150).all(),
+    }
+
+contract(df)
+
+check("the real file satisfies the contract", all(contract(df).values()))
+
+# Now we corrupt a COPY on purpose and see whether the contract notices:
+bad = df.copy()
+bad.loc[0, "waist_circumference_cm"] = 500 # but the range (1 to 150)
+print(contract(bad))
+check("the contract catches the corrupted copy", not all(contract(bad).values()))
+
+missing_pct = (df.isnull().mean() * 100).round(1)
+display(missing_pct[missing_pct > 0].sort_values(ascending=False))
+
+# Analyze missingness rate of smoking and alcohol grouped by diabetes risk
+by_risk = (
+    df.assign(
+        smoking_missing=df["smoking_status"].isnull(),
+        alcohol_missing=df["alcohol_consumption"].isnull()
+    )
+    .groupby("diabetes_risk")[["smoking_missing", "alcohol_missing"]]
+    .mean()
+    .round(3)
+)
+display(by_risk)
+
+# Plot the missing rate
+by_risk.mul(100).plot.bar(rot=0, color=["#FF9D38", "#E64141"])
+plt.ylabel("% missing")
+plt.title("Missing Rate of Behaviors by Diabetes Risk Category")
+plt.show()
+
+check("Alcohol consumption 25.3% and smoking status 3.1% missing", missing_pct["alcohol_consumption"] == 25.3 and missing_pct["smoking_status"] == 3.1)
+check("Smoking status missing for 3.1% of Low risk", abs(by_risk.loc["Low", "smoking_missing"] - 0.03) < 0.002)
+check("24.7% alcohol missing for high risk diabetes", abs(by_risk.loc["High", "alcohol_missing"] - 0.247) < 0.002)
+
+# part A: validation log (provided)
+rules = {
+    "patient_id is unique":          ("Row key",                    lambda d: int(d["patient_id"].duplicated().sum())),
+    "Age between 0 and 100":        ("Plausible human range",      lambda d: int((~d["age"].dropna().between(0, 100)).sum())),
+    "Sex is Male/Female/Other":     ("Categorical validation",     lambda d: int((~d["gender"].isin(["Male", "Female", "Other"])).sum())),
+    "Sleep hours >= 0":             ("Hours must be positive",     lambda d: int((d["hours_sleep_per_night"] < 0).sum())),
+    "Fasting blood sugar range":    ("Plausible BS values",        lambda d: int((~d["fasting_blood_sugar"].between(50, 300)).sum())),
+    "Waist-size range between 20 and 140":    ("Plausible human range",     lambda d: int((~d["waist_circumference_cm"].between(20, 140)).sum())),
+
+}
+log = pd.DataFrame([{"rule": k, "rationale": v[0], "violations": v[1](df)} for k, v in rules.items()])
+log
+
+# Part B: extreme values
+q1, q3 = df["fasting_blood_sugar"].quantile(0.25), df["fasting_blood_sugar"].quantile(0.75)
+fence = q3 + 1.5 * (q3 - q1)
+flagged = df[df["fasting_blood_sugar"] > fence]
+share_high_risk = len(flagged[flagged["diabetes_risk"] == "High"]) / len(df[df["diabetes_risk"] == "High"])
+
+print(f"fence = {fence:.1f}; flagged = {len(flagged)} ({len(flagged) / len(df):.1%} of patients)")
+print(f"share of high risk flagged: {share_high_risk:.1%}")
+print("skewness: raw", round(df["fasting_blood_sugar"].skew(), 2), "| after log1p", round(np.log1p(df["fasting_blood_sugar"]).skew(), 2))
+
+fig, ax = plt.subplots(1, 2, figsize=(10, 3))
+ax[0].hist(df["fasting_blood_sugar"], bins=40, color="#3431B6"); ax[0].axvline(fence, color="#E64141", ls="--"); ax[0].set_title("Fasting Blood Sugar (raw)")
+ax[1].hist(np.log1p(df["fasting_blood_sugar"]), bins=40, color="#54B7AF"); ax[1].set_title("log(1 + Fasting Blood Sugar)")
+plt.tight_layout(); plt.show()
+
+age = df["age"].dropna().sort_values().values      # the observed ages, sorted, as a NumPy array
+ecdf = np.arange(1, len(age) + 1) / len(age)       # 1/n, 2/n, ..., n/n
+plt.step(age, ecdf, where="post", color="#3431B6")
+plt.xlabel("age (years)"); plt.ylabel("Cumulative proportion"); plt.title("ECDF of observed ages"); plt.show()
+
+F45 = (age <= 45).mean()
+print("n =", len(age), "| F(45) =", round(F45, 3))
+
+counts = df["diabetes_risk"].value_counts()
+baseline = counts.max() / counts.sum()             # largest class count divided by the total
+print(counts.to_dict(), "| majority baseline accuracy:", round(baseline, 3))
+
+check("n = 15000 observed ages", len(age) == 15000)
+check("the ECDF reaches exactly 1", ecdf[-1] == 1.0)
+check("majority baseline is 0.60", abs(baseline - 0.60) < 1e-9)
+
+waist_size = df["waist_circumference_cm"].dropna().sort_values().values      # the observed waist sizes, sorted, as a NumPy array
+ecdf = np.arange(1, len(waist_size) + 1) / len(waist_size)       # 1/n, 2/n, ..., n/n
+plt.step(waist_size, ecdf, where="post", color="#3431B6")
+plt.xlabel("waist (cm)"); plt.ylabel("Cumulative proportion"); plt.title("ECDF of observed waist sizes"); plt.show()
+
+F99_3 = (waist_size <= 99.3).mean()
+print("n =", len(waist_size), "| F(99.3) =", round(F99_3, 3))
+
+counts = df["diabetes_risk"].value_counts()
+baseline = counts.max() / counts.sum()             # largest class count divided by the total
+print(counts.to_dict(), "| majority baseline accuracy:", round(baseline, 3))
+
+# Part A (provided): Age by outcome. Same median, different shape.
+display(df.groupby("diabetes_risk")["age"].agg(["count", "mean", "median", "std"]).round(2))
+sns.violinplot(data=df, x="diabetes_risk", y="age", inner="quartile", cut=0,
+               hue="diabetes_risk", palette=["#E64141", "#54B7AF","#5577CC"], legend=False)
+plt.title("Age by outcome"); plt.show()
+
+# Part B: Cramer's V
+def cramers_v(table):
+    chi2, p, dof, _ = st.chi2_contingency(table)
+    n = table.sum().sum()                # total count in the table
+    k = min(table.shape) - 1             # min(rows, columns) - 1
+    return np.sqrt(chi2 / (n * k))       # the formula for V
+
+t_class = pd.crosstab(df["diabetes_risk"], df["family_history_diabetes"])
+t_sex   = pd.crosstab(df["diabetes_risk"], df["gender"])
+print(f"V(Family History, Diabetes Risk) = {cramers_v(t_class):.3f}")
+print(f"V(Gender, Diabetes Risk)         = {cramers_v(t_sex):.3f}")
+
+# Part C: Wilson 95% intervals for high diabetes risk by gender
+g = df.groupby("gender")["diabetes_risk"].agg(k=lambda x: (x == "High").sum(), n="size")
+g["rate"] = g["k"] / g["n"]              # k / n
+g[["lo", "hi"]] = [proportion_confint(int(k), int(n), method="wilson") for k, n in zip(g["k"], g["n"])]
+g.round(3)
+
+
+
+# Part C: Cramer's V
+def cramers_v(table):
+    chi2, p, dof, _ = st.chi2_contingency(table)
+    n = table.sum().sum()                # total count in the table
+    k = min(table.shape) - 1             # min(rows, columns) - 1
+    return np.sqrt(chi2 / (n * k))       # the formula for V
+
+t_class = pd.crosstab(df["diabetes_risk"], df["waist_circumference_cm"])
+t_sex   = pd.crosstab(df["diabetes_risk"], df["age"])
+print(f"V(waist-size, Diabetes Risk) = {cramers_v(t_class):.3f}")
+print(f"V(age, Diabetes Risk)         = {cramers_v(t_sex):.3f}")
+
+# Part C: Wilson 95% intervals for high diabetes risk by gender
+g = df.groupby("age")["diabetes_risk"].agg(k=lambda x: (x == "High").sum(), n="size")
+g["rate"] = g["k"] / g["n"]              # k / n
+g[["lo", "hi"]] = [proportion_confint(int(k), int(n), method="wilson") for k, n in zip(g["k"], g["n"])]
+g.round(3)
+
+# Part D: Cramer's V
+def cramers_v(table):
+    chi2, p, dof, _ = st.chi2_contingency(table)
+    n = table.sum().sum()                # total count in the table
+    k = min(table.shape) - 1             # min(rows, columns) - 1
+    return np.sqrt(chi2 / (n * k))       # the formula for V
+
+t_class = pd.crosstab(df["waist_circumference_cm"], df["diabetes_risk"])
+t_sex   = pd.crosstab(df["hba1c_level"], df["diabetes_risk"])
+print(f"V(waist_circumference_cm, Diabetes Risk) = {cramers_v(t_class):.3f}")
+print(f"V(hba1c_level, Diabetes Risk)         = {cramers_v(t_sex):.3f}")
+
+# Part C: Wilson 95% intervals for high diabetes risk by gender
+g = df.groupby("waist_circumference_cm")["diabetes_risk"].agg(k=lambda x: (x == "High").sum(), n="size")
+g["rate"] = g["k"] / g["n"]              # k / n
+g[["lo", "hi"]] = [proportion_confint(int(k), int(n), method="wilson") for k, n in zip(g["k"], g["n"])]
+g.round(3)
+
+# Part A: diabetes by gender AND physical_activity_level
+analysis = (
+    df.loc[:, ["diabetes_risk", "family_history_diabetes", "gender", "physical_activity_level", "hours_sleep_per_night"]]
+      .query("hours_sleep_per_night >= 0")
+      .groupby(["physical_activity_level", "gender"], observed=True)
+      .agg(patients_id=("diabetes_risk", "size"),                                  # total rows
+           high_risk_rate=("diabetes_risk", lambda x: (x == "High").mean()),       # proportion of High risk
+           median_sleep=("hours_sleep_per_night", "median"))
+      .reset_index()
+)
+display(analysis.round({"high_risk_rate": 3, "median_sleep": 2}))
+
+male_share = df.groupby("physical_activity_level")["gender"].apply(lambda s: (s == "Male").mean()).round(3)
+print("share of men by physical activity level:", male_share.to_dict())
+
+# Part A: split
+features = ["patient_id", "age", "gender", "bmi", "family_history_diabetes", "physical_activity_level", "diet_type", "smoking_status", "hours_sleep_per_night", "alcohol_consumption", "hba1c_level", "waist_circumference_cm", "income_bracket"]
+X = df[features]
+y = df["diabetes_risk"]
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=42, stratify=y     # 20% test, seed 42, stratify on the target
+)
+print(X_train.shape, X_test.shape)
+
+def profile(Xf, yf):                                          # provided
+    return pd.Series({"n": len(Xf),
+                      "high_diabetes_risk": (yf == "High").mean(),
+                      "age_missing": Xf["age"].isna().mean(),
+                      "median bmi": Xf["bmi"].median(),
+                      "hbac1c_missing": Xf["hba1c_level"].isna().mean(),
+                      "diet_missing": Xf["diet_type"].isna().mean(),
+                      "alcohol_missing": Xf["alcohol_consumption"].isna().mean(),
+                      "smoking_missing": Xf["smoking_status"].isna().mean(),
+                      "median_sleep": Xf["hours_sleep_per_night"].median(),
+                      "median_waist": Xf["waist_circumference_cm"].median()})
+display(pd.DataFrame({"train": profile(X_train, y_train), "test": profile(X_test, y_test)}).T.round(3))
+
+# Part B: leak-free standardisation
+median_all = df["age"].median()                               # FLAWED: this uses test rows too
+median_train =  X_train["age"].median()                                            # the median Age of the TRAINING rows
+A_train = X_train[["age", "bmi"]].to_numpy(dtype=float)
+A_test  = X_test[["age", "bmi"]].to_numpy(dtype=float)
+mu =  np.nanmean(A_train, axis=0)                                                     # column means of A_train, ignoring NaN (np.nanmean, axis=0)
+sd =   np.nanstd(A_train, axis=0)                                                    # column standard deviations of A_train, ignoring NaN
+Z_test = Z_test = (A_test - mu) / sd
+                                                 # standardise A_test with mu and sd
+print("median Age: all rows", median_all, "| training rows only", median_train)
+print("mu =", mu.round(2), "| sd =", sd.round(2))
+print("Z_test =\n", Z_test.round(2))
+
+check("split shapes (12000, 13) and (3000, 13)", X_train.shape == (12000, 13) and X_test.shape == (3000, 13))
+check("the median comes from the training rows 45)", median_train == X_train["age"].median() and median_train != median_all)
+check("Z_test matches scikit-learn's StandardScaler fitted on the training rows",
+      np.allclose(Z_test, StandardScaler().fit(A_train).transform(A_test), equal_nan=True))
+
+def one_run(seed):
+    rng = np.random.default_rng(seed)
+    Xn = rng.normal(size=(100, 5000))        # 5,000 noise features
+    yn = rng.integers(0, 2, 100)             # random labels
+    clf = LogisticRegression(max_iter=1000)
+
+    # WRONG: feature selection sees ALL the labels before cross-validation
+    X_sel = SelectKBest(f_classif, k=20).fit_transform(Xn, yn)
+    wrong = cross_val_score(clf, X_sel, yn, cv=5).mean()
+
+    # RIGHT: selection happens inside each training fold
+    pipe = Pipeline([("select", SelectKBest(f_classif, k=20)), ("clf", clf)])
+    right = cross_val_score(pipe, Xn, yn, cv=5).mean()
+    return wrong, right
+
+results = np.array([one_run(s) for s in range(20)])       # 20 random seeds (takes a few seconds)
+wrong_mean, right_mean = results.mean(axis=0)
+print(f"wrong (leaky): {wrong_mean:.3f}    right (pipeline): {right_mean:.3f}    (chance = 0.500)")
