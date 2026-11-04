@@ -1,21 +1,17 @@
 
 """
-Unit tests for the Patient Pipeline.
-
-Run with:
-    python -m pytest -q test_pipeline.py
+looking at patient pipeline.
 """
 
 import apache_beam as beam
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that, equal_to
-
 import diabetes_pipeline as dp
 
 
-# ---------------------------------------------------------
-# 1. SAMPLE PATIENT RECORD
-# ---------------------------------------------------------
+# 
+# Use out a standard:
+# change glucose term later to hea
 
 GOOD = {
     "patient_id": "101",
@@ -27,9 +23,9 @@ GOOD = {
 }
 
 
-# ---------------------------------------------------------
-# 2. TEST PATIENT ID VALIDATION
-# ---------------------------------------------------------
+# -
+# TESTVALIDATION
+# -
 
 def test_validate_sends_good_and_bad_rows_to_the_right_place():
 
@@ -84,9 +80,9 @@ def test_validate_sends_good_and_bad_rows_to_the_right_place():
         )
 
 
-# ---------------------------------------------------------
-# 3. TEST PATIENT DATA PRESERVATION
-# ---------------------------------------------------------
+# 
+# TEST PATIENT DATA PRESERVATION
+# -
 
 def test_valid_patient_preserves_all_columns():
 
@@ -112,9 +108,9 @@ def test_valid_patient_preserves_all_columns():
         )
 
 
-# ---------------------------------------------------------
-# 4. TEST PATIENT ID CONVERSION
-# ---------------------------------------------------------
+# 
+# test out PATIENT ID CONVERSION
+# 
 
 def test_patient_id_is_integer():
 
