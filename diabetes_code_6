@@ -1,0 +1,179 @@
+# --- Part 0a: Google Colab setup (safe to run anywhere: it does nothing outside Colab) ---------
+import sys, subprocess
+from pathlib import Path
+
+IN_COLAB = "google.colab" in sys.modules
+REPO_URL = "https://github.com/JohnShanahan/Diabetes"
+
+def pip_install(*packages):
+    return subprocess.run([sys.executable, "-m", "pip", "install", "-q", *packages], capture_output=True, text=True)
+
+if not IN_COLAB:
+    print("You are not in Colab: nothing to do here. Go on to Part 0.")
+else:
+    repo = Path("/content/lecture6_demo")
+    if repo.exists():
+        print("The code is already downloaded:", repo)
+    else:
+        print("Downloading the code from GitHub ...")
+        result = subprocess.run(["git", "clone", "-q", REPO_URL, str(repo)], capture_output=True, text=True)
+        print(result.stdout + result.stderr if result.returncode else "Done.")
+    try:
+        import apache_beam
+        print("Apache Beam is already installed, version", apache_beam.__version__)
+    except ImportError:
+        print("Installing Apache Beam (about a minute) ...")
+        result = pip_install("apache-beam==2.77.0", "pytest")
+        if result.returncode:
+            print("That exact version did not install; trying the newest version instead ...")
+            result = pip_install("apache-beam", "pytest")
+        print((result.stdout[-500:] + result.stderr[-1500:]) if result.returncode else "Installed.")
+    print("\nIf Colab now asks you to RESTART the runtime: Runtime > Restart session, then run this cell again.")
+
+import pandas as pd
+
+url = "https://raw.githubusercontent.com/JohnShanahan/Diabetes/main/diabetes.csv"
+
+df = pd.read_csv(url)
+
+print("Diabetes dataset:")
+print("Count rows and columns:", df.shape)
+print("Column names:", df.columns.tolist())
+
+df.head()
+
+create a diabetes pipeline file in pythong
+
+import apache_beam as beam
+with beam.Pipeline() as p:
+    (p
+     | "Create" >> beam.Create([
+         "patient_id", "age", "gender",
+         "bmi", "waist_circumference", "income_bracket"
+     ])
+     | "Pair" >> beam.Map(lambda word: (word, 1))
+     | "Count" >> beam.CombinePerKey(sum)
+     | "Print" >> beam.Map(print))
+
+
+import apache_beam as beam
+with beam.Pipeline() as p:
+    (p
+     | "Create" >> beam.Create([
+         "bike", "dock", "bike",
+         "bike", "dock", "station"
+     ])
+     | "Pair" >> beam.Map(lambda word: (word, 1))
+     | "Count" >> beam.CombinePerKey(sum)
+     | "Print" >> beam.Map(print))
+
+
+# --- Part 1: s -------------------------------
+!wget https://raw.githubusercontent.com/JohnShanahan/Diabetes/main/diabetes_pipeline.py
+
+import diabetes_pipeline as dp
+
+def show(thing):
+    """Print the source code of a function or class from bike_pipeline.py."""
+    print(inspect.getsource(thing))
+print("The two columns every row MUST have:", dp.REQUIRED)
+print("The name of the quarantine output     :", repr(dp.BAD))
+
+import inspect
+
+show(dp.RowError)
+
+
+show(dp.ValidateRow)
+
+show(dp.build)
+
+!wget -q -O test_pipeline1.py https://raw.githubusercontent.com/JohnShanahan/Diabetes/main/test_pipeline1.py
+
+import sys
+import subprocess
+
+# Define the missing helper variables and functions
+PY = sys.executable
+
+def run(cmd_args):
+    result = subprocess.run(cmd_args, capture_output=True, text=True)
+    return result.returncode, result.stdout + result.stderr
+
+def check(desc, condition):
+    if condition:
+        print(f"[PASS] {desc}")
+    else:
+        print(f"[FAIL] {desc}")
+
+code, out = run([PY, "-m", "pytest", "-q", "test_pipeline1.py"])
+print(out)
+check("all tests passed (exit code 0)", code == 0)
+
+!wget -q -O make_sample_data.py https://raw.githubusercontent.com/JohnShanahan/Diabetes/main/make_sample_data.py
+
+code, out = run([PY, "make_sample_data.py"])
+raw_files = sorted(Path("sample/raw").glob("*.csv"))
+print()
+for f in raw_files:
+    print(f"{f.name:55s} {f.stat().st_size:>7} bytes")
+
+for f in raw_files:
+    print("---", f.name)
+    with open(f, encoding="utf-8") as handle:
+        for _ in range(3):
+            print(handle.readline().rstrip())
+print()
+print("The diabetes file as a table:")
+pd.read_csv(raw_files[0]).head(4)
+
+
+def run_pipeline(input_glob, output_prefix, extra=()):
+
+    """Run diabetes_pipeline.py locally. Returns (exit code, counters as a dict, seconds taken)."""
+
+    args = [PY,"diabetes_pipeline.py", "--runner", "DirectRunner", "--input", input_glob, "--output", output_prefix,
+        *extra]
+
+    start = time.time()
+    code, out = run(args)
+    counters = {m.group(1): int(m.group(2))
+        for m in re.finditer(
+        r"^\s{2}(\w+)\s+(\d+)\s*$",
+        out,
+        flags=re.M
+        )
+    }
+    return code, counters, time.time() - start
+
+
+def read_jsonl(pattern):
+    """Read all result files matching a pattern into one table."""
+
+    frames = [
+        pd.read_json(f, lines=True)
+        for f in sorted(glob.glob(pattern))
+        if os.path.getsize(f) > 0
+    ]
+
+    return (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame()
+    )
+
+
+# Patient/ pipeline
+
+
+shutil.rmtree("out/sample", ignore_errors=True)
+
+code, counters, seconds = run_pipeline(
+    "sample/raw/*.csv",
+    "out/sample/patients"
+)
+
+print(f"\nExit code {code}; took {seconds:.0f} seconds")
+
+print("\nPipeline counters:")
+print(counters)
