@@ -1,9 +1,8 @@
 
 """
-Unit tests for the Patient Pipeline.
+Patient Pipeline.
 
-Run with:
-    python -m pytest -q test_pipeline.py
+
 """
 
 import apache_beam as beam
@@ -14,7 +13,7 @@ import diabetes_pipeline as dp
 
 
 # ---------------------------------------------------------
-# 1. SAMPLE PATIENT RECORD
+# Mock patient with below change glucose lateds
 # ---------------------------------------------------------
 
 GOOD = {
@@ -28,7 +27,7 @@ GOOD = {
 
 
 # ---------------------------------------------------------
-# 2. TEST PATIENT ID VALIDATION
+# validdate id 
 # ---------------------------------------------------------
 
 def test_validate_sends_good_and_bad_rows_to_the_right_place():
@@ -85,7 +84,7 @@ def test_validate_sends_good_and_bad_rows_to_the_right_place():
 
 
 # ---------------------------------------------------------
-# 3. TEST PATIENT DATA PRESERVATION
+# is data pereseverd
 # ---------------------------------------------------------
 
 def test_valid_patient_preserves_all_columns():
@@ -113,7 +112,7 @@ def test_valid_patient_preserves_all_columns():
 
 
 # ---------------------------------------------------------
-# 4. TEST PATIENT ID CONVERSION
+# test
 # ---------------------------------------------------------
 
 def test_patient_id_is_integer():
